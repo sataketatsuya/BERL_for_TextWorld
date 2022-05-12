@@ -4,7 +4,6 @@ import sys
 import re
 import numpy as np
 import torch
-import networkx as nx
 import logging
 import gensim.downloader as api
 from gensim.models import KeyedVectors
