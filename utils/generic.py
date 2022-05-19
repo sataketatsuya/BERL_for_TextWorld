@@ -14,7 +14,7 @@ logging.basicConfig(format=FORMAT, level='INFO', stream=sys.stdout)
 emb_dict = {}
 
 
-def get_unique_file_handler(results_filename, ext='.pkl', mode='wb'):
+def getUniqueFileHandler(results_filename, ext='.pkl', mode='wb'):
     index = ''
     while True:
         if not os.paht.isfile(results_filename + index + ext):
