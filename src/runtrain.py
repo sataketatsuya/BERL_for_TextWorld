@@ -13,17 +13,23 @@ def run_pipeline(games_path):
     os.makedirs(output, exist_ok=True)
 
     # preprocess games walkthrough
-    subprocess.run(["python", os.path.join(basepath, 'datasets.py'), games_path, "--output", output])
+    print('start preprocessing games walkthrough')
+    subprocess.run(["python", os.path.join(basepath, 'dataset.py'), games_path, "--output", output])
+    print('done')
 
     # preprocess data for NER
+    print('start preprocessing data for NER')
     subprocess.run(["python", os.path.join(basepath, 'nerdataset.py'), "--output", output])
+    print('done')
 
     # train NER model
+    print('start training NER model')
     subprocess.run(["python", os.path.join(basepath, 'nertrain.py'), "--output", output])
+    print('done')
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('games_path', type=str, help="path to the games files")
+    parser.add_argument('--games_path', type=str, help="path to the games files")
     args = parser.parse_args()
     run_pipeline(args.games_path)

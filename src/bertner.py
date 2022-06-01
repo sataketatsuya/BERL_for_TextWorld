@@ -15,9 +15,8 @@ TMF = "26bc1ad6c0ac742e9b52263248f6d0f00068293b33709fae12320c0e35ccfbbb.542ce428
 
 class Ner:
 
-    def __init__(self, model_dir: str, device: str = 'cuda', docker=False):
+    def __init__(self, model_dir: str, device: str = 'cuda'):
         self.device = device
-        self.docker = docker
         self.model , self.tokenizer, self.model_config = self.load_model(model_dir)
         self.label_map = self.model_config["label_map"]
         self.max_seq_length = self.model_config["max_seq_length"]
@@ -32,11 +31,7 @@ class Ner:
         config = BertConfig(output_config_file)
         model = BertForTokenClassification(config, num_labels=model_config["num_labels"])
         model.load_state_dict(torch.load(output_model_file, map_location=self.device))
-        if self.docker:
-            fn = os.path.join('/root/.pytorch_pretrained_bert', TMF)
-            tokenizer = BertTokenizer.from_pretrained(fn, cache_dir=None, do_lower_case=True)
-        else:
-            tokenizer = BertTokenizer.from_pretrained(model_config["bert_model"],do_lower_case=True)
+        tokenizer = BertTokenizer.from_pretrained(model_config["bert_model"],do_lower_case=True)
         return model, tokenizer, model_config
 
     def tokenize(self, text: str):

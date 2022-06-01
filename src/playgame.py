@@ -259,7 +259,7 @@ def main():
     os.chdir(args.submission_dir)
     sys.path = [args.submission_dir] + sys.path
     from custom_agent import CustomAgent
-    _run_evaluation(CustomAgent, args, {'docker': False})
+    _run_evaluation(CustomAgent, args)
 
 
 if __name__ == "__main__":

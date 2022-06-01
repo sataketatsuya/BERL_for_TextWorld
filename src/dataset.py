@@ -22,16 +22,6 @@ def get_cv_games(datapath, block=''):
     games = [game for game in os.listdir(os.path.join(datapath, block)) if game.endswith('.ulx')]
     return [os.path.join(datapath, block, game) for game in games]
 
-    games = [game for game in os.listdir(os.path.join(datapath, 'test')) if game.endswith('.ulx')]
-    with open(os.path.join(datapath, 'valid200.txt')) as f:
-        valid = [g.strip() for g in f.readlines()]
-
-    if block == 'test':
-        games = [game for game in os.listdir(os.path.join(datapath, 'test')) if game.endswith('.ulx')]
-        return [os.path.join(datapath, 'test', game) for game in games]
-    else:
-        return [os.path.join(datapath, 'train', game) for game in games]
-
 
 def train_test_split(datapath):
     """ split the data into train/validation """
@@ -264,9 +254,12 @@ def extract_datasets(datapath, outputpath, use_walkthrough_ext=False):
     else:
         walkthrough_ext_dict, sufix = None, ''
 
+    print(f'generate walkthrough_train{sufix}.csv file')
     train_games = get_cv_games(datapath, 'train')
     train_data = extract_walkthrough_dataset(train_games, walkthrough_ext_dict)
     train_data.to_csv(os.path.join(outputpath, f'walkthrough_train{sufix}.csv'), index=False)
+
+    print(f'generate walkthrough_valid{sufix}.csv file')
     valid_games = get_cv_games(datapath, 'valid')
     valid_data = extract_walkthrough_dataset(valid_games, walkthrough_ext_dict)
     valid_data.to_csv(os.path.join(outputpath, f'walkthrough_valid{sufix}.csv'), index=False)
@@ -281,6 +274,7 @@ def enhanced_walkthrough(outputpath):
     based on the extracted walkthrough make an enhanced walkthrough
     that first finds the cookbook and then does the take/drop actions
     """
+    print(f'generate enhanced_walkthrough.csv')
     valid = pd.read_csv(os.path.join(outputpath, 'walkthrough_valid.csv'))
     train = pd.read_csv(os.path.join(outputpath, 'walkthrough_train.csv'))
     gtr = train.groupby('gamename').command.apply(list).to_frame('walk_cookbook').reset_index()
