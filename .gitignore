@@ -1,3 +1,8 @@
 .DS_Store
-dataset.zip
 ./games/
+*.zip
+*.csv
+*.json
+*.txt
+./outputs/nerdata/
+./outputs/nermodel
