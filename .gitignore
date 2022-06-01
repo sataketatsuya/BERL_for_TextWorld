@@ -3,6 +3,8 @@
 *.zip
 *.csv
 *.json
-*.txt
+*.ulx
+*.z8
+*.log
 ./outputs/nerdata/
 ./outputs/nermodel
