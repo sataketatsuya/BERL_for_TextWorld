@@ -7,9 +7,9 @@ It is recommended to install the conda virtual environment.
 You can install conda command on Linux [here](https://docs.conda.io/projects/conda/en/latest/user-guide/install/linux.html)
 
 ```
-cd BERL_FOR_TEXTWORLD
+cd BERL_for_TEXTWORLD
 
-conda create -n berl python=3.7 numpy scipy ipython matplotlib pandas scikit-learn seaborn
+conda create -n berl python=3.7 numpy scipy ipython matplotlib pandas scikit-learn
 conda activate berl
 conda install pytorch torchvision cudatoolkit -c pytorch
 

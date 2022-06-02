@@ -27,6 +27,12 @@ def run_pipeline(games_path):
     subprocess.run(["python", os.path.join(basepath, 'nertrain.py'), "--output", output])
     print('done')
 
+    # train NER BERT Agent
+    print('start training NER BERT Agent')
+    subprocess.run(["python", os.path.join(basepath, 'agenttrain.py'),
+                    "--output", output, "--datapath", games_path, "--episodes", str(500)])
+    print('done')
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()

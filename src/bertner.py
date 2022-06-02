@@ -11,10 +11,8 @@ from nltk import word_tokenize
 from pytorch_pretrained_bert.modeling import CONFIG_NAME, WEIGHTS_NAME, BertConfig, BertForTokenClassification
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 
-TMF = "26bc1ad6c0ac742e9b52263248f6d0f00068293b33709fae12320c0e35ccfbbb.542ce4285a40d23a559526243235df47c5f75c197f04f37d1a0c124c32c9a084"
 
 class Ner:
-
     def __init__(self, model_dir: str, device: str = 'cuda'):
         self.device = device
         self.model , self.tokenizer, self.model_config = self.load_model(model_dir)
@@ -24,7 +22,7 @@ class Ner:
         self.model.eval()
 
     def load_model(self, model_dir: str, model_config: str = "model_config.json"):
-        model_config = os.path.join(model_dir,model_config)
+        model_config = os.path.join(model_dir, model_config)
         model_config = json.load(open(model_config))
         output_config_file = os.path.join(model_dir, CONFIG_NAME)
         output_model_file = os.path.join(model_dir, WEIGHTS_NAME)
