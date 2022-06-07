@@ -113,6 +113,32 @@ AUGMENT = {
         'ice cream']
 }
 
+templates = {'chop {f} with {o}',
+    'cook {f} with {oven}',
+    'cook {f} with {stove}',
+    'cook {f} with {toaster}',
+    'dice {f} with {o}',
+    'drop {o}',
+    # 'examine {o}',
+    # 'examine {t}',
+    'go east',
+    'go north',
+    'go south',
+    'go west',
+    'insert {o} into {c}',
+    'inventory',
+    'lock {c} with {k}',
+    'lock {d} with {k}',
+    'look',
+    'open {c}',
+    'open {d}',
+    'prepare meal',
+    'slice {f} with {o}',
+    'take {o}',
+    'unlock {c} with {k}',
+    'unlock {d} with {k}'
+}
+
 
 def get_game_entities():
     return [v for vls in categories.values() for v in vls]

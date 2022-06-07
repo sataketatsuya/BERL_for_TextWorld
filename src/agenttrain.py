@@ -3,7 +3,9 @@ import random
 import argparse
 import numpy as np
 from tqdm import tqdm
+from time import time
 import joblib
+import glob
 
 import torch
 import textworld
@@ -11,12 +13,7 @@ import textworld.gym
 from textworld import EnvInfos
 import gym
 from agent import NerBertAgent
-from commandgenerator import CommandModel
-from nerdataset import get_category
-
-
-DEBUG = True
-
+from utils import get_points
 
 def get_cv_games(datapath, block=''):
     games = [game for game in os.listdir(os.path.join(datapath, block)) if game.endswith('.ulx')]
@@ -27,104 +24,113 @@ def load_agent(checkpoint_directory):
     return joblib.load(os.path.join(checkpoint_directory, 'ner_bert_agent.pkl'))
 
 
-def train(args):
-    """ train the ner bert agent """
-    checkpoint_directory = os.path.join(args.output, 'ner_bert_agent')
+class Environment:
+    """
+    Wrapper for the TextWorld Environment.
+    """
+    def __init__(self, games_dir, max_nb_steps=100, batch_size=1):
+        self.games = self.get_games(games_dir)
+        self.max_nb_steps = max_nb_steps
+        self.batch_size = batch_size
+        self.env = self.setup_env()
 
-    if not os.path.exists(checkpoint_directory):
-        os.makedirs(checkpoint_directory)
+    def step(self, commands):
+        return self.env.step(commands)
 
-    train_games = get_cv_games(args.datapath, 'train')
-    gamefile = train_games[0] # Training for just a game
-    if DEBUG:
-        print('Game name:', gamefile)
+    def reset(self):
+        return self.env.reset()
 
-    try:
-        agent = load_agent(checkpoint_directory)
-        if DEBUG:
-            print('Successfully loaded agent. file name is ner_bert_agent.pkl')
-    except:
-        agent = NerBertAgent(args)
-    agent.train()
+    def render(self):
+        return self.env.render()
 
-    requested_infos = EnvInfos(
-        max_score=True, won=True, lost=True,                            # Handicap 0
-        description=True, inventory=True, objective=True,               # Handicap 1
-        verbs=True, command_templates=True,                             # Handicap 2
-        entities=False,                                                 # Handicap 3
-        extras=[""],                                                    # Handicap 4
-        admissible_commands=False)                                      # Handicap 5
+    def manual_game(self):
+        try:
+            done = False
+            self.env.reset()
+            nb_moves = 0
+            while not done:
+                self.env.render()
+                command = input("Input ")
+                nb_moves += 1
+                obs, scores, dones, infos = self.env.step([command])
 
-    env_id = textworld.gym.register_games([gamefile], requested_infos)
-    env = gym.make(env_id)
-    gamesteps = []
-    obs, infos = env.reset()
+            self.env.render()  # Final message.
+        except KeyboardInterrupt:
+            pass  # Quit the game.
 
-    for episode in tqdm(range(args.episodes)):
-        obs, infos = env.reset()
+        print("Played {} steps, scoring {} points.".format(nb_moves, scores[0]))
 
-        scores = 0
-        done = False
-        num_steps = 0
-        total_reward = 0
-        while not done and num_steps <= args.max_steps:
-            command = agent.act(obs, scores, done, infos)
-            if command is None:
-                break
-            obs, scores, done, infos = env.step(command)
-            num_steps += 1
+    def setup_env(self):
+        requested_infos = self.select_additional_infos()
+        self.games = ['/home/satake/ledeepchef/game/tw-cooking-recipe2+take2+cut+open-BnYEixa9iJKmFZxO.ulx']
+        env_id = textworld.gym.register_games(self.games, requested_infos,
+                                            max_episode_steps=self.max_nb_steps)
+        return gym.make(env_id)
 
-            if scores != 0:
-                total_reward += 1
-                print(f'Agent got a reward. Command is {command}')
+    def get_games(self, games_dir):
+        games = []
+        for game in [games_dir]:
+            if os.path.isdir(game):
+                games += glob.glob(os.path.join(game, "*.ulx"))
+            else:
+                games.append(game)
+        games = [os.path.join(os.getcwd(), game) for game in games]
+        print("{} games found for training.".format(len(games)))
+        return games
 
-            # if episode % 10 == 0: # save the agent
-            #     joblib.dump(agent, os.path.join(checkpoint_directory, 'ner_bert_agent.pkl'), compress=True)
+    def select_additional_infos(self) -> EnvInfos:
+        request_infos = EnvInfos(
+            max_score=True, won=True, lost=True,                            # Handicap 0
+            description=True, inventory=True, objective=True,               # Handicap 1
+            verbs=True, command_templates=True,                             # Handicap 2
+            entities=False,                                                 # Handicap 3
+            extras=['walkthrough'],                                                      # Handicap 4
+            admissible_commands=False)                                      # Handicap 5
 
-        max_score = infos['max_score']
-        print(f'Episode {episode}: Max score is {max_score}. Agent got {total_reward}.')
-        agent.act(obs, scores, done, infos) # Let the agent know the game is done.
-        gamesteps.append(num_steps)
-        # np.save('gamesteps', gamesteps)
+        return request_infos
 
 
-def initialize_random_seed(seed):
-    random.seed(seed)
-    np.random.seed(seed)
+class Trainer:
+    def __init__(self, args):
+        self.agent = NerBertAgent(args)
+        self.env = Environment(args.games)
+
+    def train(self):
+        self.start_time = time()
+
+        for epoch_no in range(1, self.agent.nb_epochs + 1):
+            for game_no in tqdm(range(len(self.env.games))):
+                obs, infos = self.env.reset()
+                self.agent.train()
+
+                score = 0
+                done = False
+                steps = 0
+                while not done:
+                    # Increase step counts.
+                    steps += 1
+                    command = self.agent.act(obs, score, done, infos)
+                    obs, score, done, infos = self.env.step(command)
+
+                print('Game Result Won:{} Lost:{}'.format(infos['won'], infos['lost']))
+                print('Max score :{}, Agent score : {}'.format(infos['max_score'], score))
+                if infos['won']:
+                    print('Walkthrough steps :{}, Agent steps :{}'.format(len(infos['extra.walkthrough']), steps))
+                # Let the agent know the game is done.
+                self.agent.act(obs, score, done, infos)
+                self.agent.model.reset_hidden()
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(description="Train an agent.")
     parser.add_argument('--output', required=True, type=str,
                         help="path for output modelxs")
-    parser.add_argument('--datapath', required=True, type=str,
-                        help="path to the folder games")
-    parser.add_argument("--batch_size", default=1, type=int,
-                        help="Total batch size for training.")
-    parser.add_argument('--hidden_size', default=256, type=int,
-                        help="Number of rows from dataset to use (default 0 uses all data)")
-    parser.add_argument("--episodes", required=True, type=int,
-                        help="The episodes number being executed")
-    parser.add_argument("--learning_rate", default=1e-5, type=float,
-                        help="Learning rate for model training")
-    parser.add_argument("--gamma", default=0.9, type=float,
-                        help="Gamma for model training")
-    parser.add_argument("--max_steps", default=100, type=int,
-                        help="Max steps in an episode")
-    parser.add_argument("--validate", action='store_true',
-                        help="Run validation")
-    parser.add_argument("--batch_size_eval", default=1, type=int,
-                        help="Total batch size for evaluation.")
-    parser.add_argument("--max_seq_length", default=1024, type=int,
-                        help="Max sequence size in model")
-    parser.add_argument("--clean", action='store_true',
-                        help="Remove previous model checkpoints")
-    parser.add_argument("--bert_model", default="bert-base-uncased", type=str,
-                        help="Bert pre-trained model selected in the list: bert-base-uncased, "
-                            "bert-large-uncased, bert-base-cased, bert-large-cased, bert-base-multilingual-uncased, "
-                            "bert-base-multilingual-cased, bert-base-chinese.")
+    parser.add_argument('--config_file', required=True, type=str,
+                        help='File of the config fot training.')
+    parser.add_argument('--games', required=True, type=str,
+                        help='Directory of the games used for training.')
+    parser.add_argument('--gpu', action='store', type=str, default=None,
+                        help='Set cuda index for training.')
     args = parser.parse_args()
-    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    initialize_random_seed(args.episodes)
 
-    train(args)
+    Trainer(args).train()

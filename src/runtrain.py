@@ -11,6 +11,9 @@ def run_pipeline(games_path):
     basepath = os.path.dirname(os.path.realpath(__file__))
     output = os.path.join(os.path.dirname(basepath), 'outputs')
     os.makedirs(output, exist_ok=True)
+    config_file = os.path.join(os.path.dirname(basepath), 'config', 'config.yaml')
+    if not os.path.exists(config_file):
+        raise NotImplementedError()
 
     # preprocess games walkthrough
     print('start preprocessing games walkthrough')
@@ -29,8 +32,9 @@ def run_pipeline(games_path):
 
     # train NER BERT Agent
     print('start training NER BERT Agent')
+    games_path = os.path.join(games_path, 'train')
     subprocess.run(["python", os.path.join(basepath, 'agenttrain.py'),
-                    "--output", output, "--datapath", games_path, "--episodes", str(500)])
+                    "--output", output, "--config_file", config_file, "--games", games_path])
     print('done')
 
 

@@ -1,4 +1,5 @@
 import math
+import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim, Tensor
@@ -7,13 +8,15 @@ from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 
 class CommandScorer(nn.Module):
-    def __init__(self, args, d_model=512, nhead=8, d_hid=2048, nlayers=6, dropout=0.1):
+    def __init__(self, device, config, epsilon=0.1,
+                d_model=512, nhead=8, d_hid=2048, nlayers=6, dropout=0.1):
         super(CommandScorer, self).__init__()
         torch.manual_seed(42)  # For reproducibility
-        self.args = args
-        self.batch_size = self.args.batch_size
-        input_size   = self.args.max_seq_length
-        hidden_size  = self.args.hidden_size
+        self.device = device
+        self.batch_size = config['model']['batch_size']
+        input_size   = config['model']['max_seq_length']
+        hidden_size  = config['model']['hidden_size']
+        self.epsilon = config['model']['epsilon'] if 'epsilon' in config['model'] else epsilon
 
         self.model_type = 'Transformer'
         self.pos_encoder = PositionalEncoding(d_model, dropout)
@@ -24,7 +27,7 @@ class CommandScorer(nn.Module):
 
         self.state_gru    = nn.GRU(d_model, d_model)
         self.hidden_size  = hidden_size
-        self.state_hidden = torch.zeros(1, 1, d_model, device=self.args.device)
+        self.state_hidden = None
 
         # Critic to determine a value for the current state
         self.critic = nn.Sequential(nn.Linear(d_model, hidden_size),
@@ -35,13 +38,16 @@ class CommandScorer(nn.Module):
                                     nn.ReLU(),
                                     nn.Linear(hidden_size, 1))
 
-        self.to(self.args.device)
+        self.to(self.device)
 
     def forward(self, state, commands, **kwargs):
         # Transformer Encoder for context state
         state_src = self.encoder(state) * math.sqrt(self.d_model)
         state_src = self.pos_encoder(state_src)
         state_output = self.transformer_encoder(state_src) # torch.Size([1, 1, 512])
+
+        if self.state_hidden is None:
+            self.state_hidden = torch.zeros(1, 1, self.d_model, device=self.device)
 
         state_output, self.state_hidden = self.state_gru(state_output, self.state_hidden) # torch.Size([1, 1, 512]) torch.Size([1, 1, 512])
         observation_hidden = self.state_hidden.squeeze()
@@ -55,7 +61,7 @@ class CommandScorer(nn.Module):
 
         # Concatenate the observed state and command encodings.
         observation_hidden = torch.stack([observation_hidden] * commands.size(1)) # torch.Size([66, 512])
-        cmd_selector_input = torch.cat([cmd_output.squeeze(), observation_hidden], dim=-1) # torch.Size([66, 1024])
+        cmd_selector_input = torch.cat([cmd_output.squeeze(1), observation_hidden], dim=-1) # torch.Size([66, 1024])
 
         # compute a score for each of the commands
         scores = self.att_cmd(cmd_selector_input).squeeze() # torch.Size([66])
@@ -65,11 +71,14 @@ class CommandScorer(nn.Module):
         prob = F.softmax(scores, dim=0)
 
         # sample from the distribution over commands
-        index = prob.multinomial(num_samples=1).squeeze()
-        return scores, index, value
+        if np.random.rand() > self.epsilon: # greedy
+            index = torch.argmax(prob).squeeze()
+        else:
+            index = prob.multinomial(num_samples=1).squeeze()
+        return scores, prob, value, index
 
-    def reset_hidden(self, batch_size):
-        self.state_hidden = torch.zeros(1, batch_size, self.d_model, device=self.args.device)
+    def reset_hidden(self):
+        self.state_hidden = None
 
 
 class PositionalEncoding(nn.Module):

@@ -6,7 +6,7 @@ BASEPATH = os.path.dirname(os.path.abspath(__file__))
 MODEL = None
 
 
-def extract_entities(description, inventory, model=None):
+def extract_entities(description, inventory='', model=None):
     global MODEL
     if model is None:
         if MODEL is None:
