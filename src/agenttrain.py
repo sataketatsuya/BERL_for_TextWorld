@@ -20,10 +20,6 @@ def get_cv_games(datapath, block=''):
     return [os.path.join(datapath, block, game) for game in games]
 
 
-def load_agent(checkpoint_directory):
-    return joblib.load(os.path.join(checkpoint_directory, 'ner_bert_agent.pkl'))
-
-
 class Environment:
     """
     Wrapper for the TextWorld Environment.
@@ -84,7 +80,7 @@ class Environment:
             description=True, inventory=True, objective=True,               # Handicap 1
             verbs=True, command_templates=True,                             # Handicap 2
             entities=False,                                                 # Handicap 3
-            extras=['walkthrough'],                                                      # Handicap 4
+            extras=['walkthrough'],                                         # Handicap 4
             admissible_commands=False)                                      # Handicap 5
 
         return request_infos
@@ -94,12 +90,16 @@ class Trainer:
     def __init__(self, args):
         self.agent = NerBertAgent(args)
         self.env = Environment(args.games)
+        self.checkpoint_directory = args.output
+
+    def load_agent(self):
+        return joblib.load(os.path.join(self.checkpoint_directory, 'ner_bert_agent', 'ner_bert_agent.pkl'))
 
     def train(self):
         self.start_time = time()
 
         for epoch_no in range(1, self.agent.nb_epochs + 1):
-            for game_no in tqdm(range(len(self.env.games))):
+            for game_no in tqdm(range(1000)):
                 obs, infos = self.env.reset()
                 self.agent.train()
 
@@ -118,7 +118,9 @@ class Trainer:
                     print('Walkthrough steps :{}, Agent steps :{}'.format(len(infos['extra.walkthrough']), steps))
                 # Let the agent know the game is done.
                 self.agent.act(obs, score, done, infos)
-                self.agent.model.reset_hidden()
+                if game_no % 100 == 0:
+                    joblib.dump(self.agent, os.path.join(self.checkpoint_directory, 'ner_bert_agent', 'ner_bert_agent.pkl'))
+                    print('saved agent')
 
 
 if __name__ == '__main__':

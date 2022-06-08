@@ -32,7 +32,10 @@ class CommandScorer(nn.Module):
         # Critic to determine a value for the current state
         self.critic = nn.Sequential(nn.Linear(d_model, hidden_size),
                                     nn.ReLU(),
+                                    nn.Linear(hidden_size, hidden_size),
+                                    nn.ReLU(),
                                     nn.Linear(hidden_size, 1))
+
         # Scorer for the commands
         self.att_cmd = nn.Sequential(nn.Linear(d_model + d_model, hidden_size),
                                     nn.ReLU(),

@@ -9,7 +9,7 @@ class CommandModel:
             '{d}': ['D', 'C'],
             '{f}': ['F'],
             '{s}': ['C', 'S'],
-            '{o}': ['F', 'T'],
+            '{o}': ['T'],
             '{x}': ['W']
         }
 
@@ -38,9 +38,6 @@ class CommandModel:
         tp = [p for p in tp if '{' not in p['entity2'] or p['entity2'] in keys ]
         out = []
         for p in tp:
-            if '{' in p['entity2']:
-                p['entity2'] = ''
-                p['preposition'] = ''
             if p['entity']:
                 out.append('{} {} {} {}'.format(p['verb'], p['entity'], p['preposition'], p['entity2']).strip())
 
@@ -54,6 +51,14 @@ class CommandModel:
                 output.append(k)
         return sorted(output)
 
+    def get_direction_cmd(self, output, entities):
+        entity_names = [e for e,_ in entities]
+        for ent in ['north', 'south', 'east', 'west']:
+            if ent in entity_names:
+                output.append('go {}'.format(ent))
+
+        return output
+
     def generate_all(self, entities, templates):
         """ generates candidate commands based on the the entities and command templates """
         templates = self.filter_templates(templates)
@@ -64,9 +69,19 @@ class CommandModel:
                 for etyp in etyps:
                     if etyp in tpl:
                         output.append(tpl.replace(etyp, ent))
-        entity_names = [e for e,_ in entities]
-        for ent in ['north', 'south', 'east', 'west']:
-            if ent in entity_names:
-                output.append('go {}'.format(ent))
+
+        templates = output
+        for ent, cat in entities:
+            etyps = self.get_ent_types(cat)
+            for tpl in templates:
+                for etyp in etyps:
+                    if etyp in tpl:
+                        if tpl in output:
+                            output.remove(tpl)
+                        cmd = tpl.replace(etyp, ent)
+                        if cmd not in output:
+                            output.append(cmd)
+        output = [cmd for cmd in output if '{' not in cmd]
+        output = self.get_direction_cmd(output, entities)
         output.append('prepare meal')
         return list(set(output))

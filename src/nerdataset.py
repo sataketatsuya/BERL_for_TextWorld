@@ -135,6 +135,7 @@ templates = {'chop {f} with {o}',
     'prepare meal',
     'slice {f} with {o}',
     'take {o}',
+    'take {f}',
     'unlock {c} with {k}',
     'unlock {d} with {k}'
 }

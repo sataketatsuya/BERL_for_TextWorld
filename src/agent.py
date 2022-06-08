@@ -132,6 +132,8 @@ class NerBertAgent:
     def get_admissible_commands(self, description, inventory, entities, templates):
         if 'cookbook' in description and not self.reading:
             cmds = ['examine cookbook']
+        elif not self.reading:
+            cmds = self.langmodel.get_direction_cmd(output=[], entities=entities)
         else:
             cmds = self.langmodel.generate_all(entities, templates)
         if self.prepared and 'eat meal' not in cmds:
@@ -207,8 +209,10 @@ class NerBertAgent:
 
             self.transitions[-1][0] = reward  # Update reward information.
 
+            self.previous_action = action
+
         # self.stats["max"]["score"].append(score)
-        if self.no_train_step % 10 == 0:
+        if len(self.transitions) >= 10 or done:
 
             # Update model
             returns, advantages = self._discount_rewards(value)
@@ -238,7 +242,7 @@ class NerBertAgent:
             self.transitions = []
 
             if loss != 0:
-                if self.no_train_step % 1000 == 0:
+                if self.model_updates % 100 == 0:
                     msg = "{:6d}. updated {}. ".format(self.no_train_step, self.model_updates)
                     msg += "  ".join("{}: {: 3.3f}".format(k, np.mean(v)) for k, v in self.stats["mean"].items())
                     msg += "  " + "  ".join("{}: {:2d}".format(k, np.max(v)) for k, v in self.stats["max"].items())
