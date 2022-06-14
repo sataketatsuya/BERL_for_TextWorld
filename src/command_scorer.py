@@ -1,22 +1,26 @@
+import os
 import math
 import numpy as np
 import torch
 import torch.nn as nn
 from torch import optim, Tensor
 import torch.nn.functional as F
+from torch.distributions.categorical import Categorical
 from torch.nn import TransformerEncoder, TransformerEncoderLayer
 
 
-class CommandScorer(nn.Module):
-    def __init__(self, device, config, epsilon=0.1,
-                d_model=512, nhead=8, d_hid=2048, nlayers=6, dropout=0.1):
-        super(CommandScorer, self).__init__()
+class ActorNetwork(nn.Module):
+    def __init__(self, device, config, critic,
+                d_model=512, nhead=8, d_hid=2048, nlayers=6, dropout=0.1,
+                chkpt_dir='/tmp/ppo'):
+        super(ActorNetwork, self).__init__()
         torch.manual_seed(42)  # For reproducibility
         self.device = device
-        self.batch_size = config['model']['batch_size']
+        self.checkpoint_file = os.path.join(chkpt_dir, 'actor_torch_ppo')
+
         input_size   = config['model']['max_seq_length']
         hidden_size  = config['model']['hidden_size']
-        self.epsilon = config['model']['epsilon'] if 'epsilon' in config['model'] else epsilon
+        alpha  = config['training']['optimizer']['alpha']
 
         self.model_type = 'Transformer'
         self.pos_encoder = PositionalEncoding(d_model, dropout)
@@ -30,17 +34,18 @@ class CommandScorer(nn.Module):
         self.state_hidden = None
 
         # Critic to determine a value for the current state
-        self.critic = nn.Sequential(nn.Linear(d_model, hidden_size),
-                                    nn.ReLU(),
-                                    nn.Linear(hidden_size, hidden_size),
-                                    nn.ReLU(),
-                                    nn.Linear(hidden_size, 1))
+        self.critic = critic
 
         # Scorer for the commands
-        self.att_cmd = nn.Sequential(nn.Linear(d_model + d_model, hidden_size),
-                                    nn.ReLU(),
-                                    nn.Linear(hidden_size, 1))
+        self.att_cmd = nn.Sequential(
+                nn.Linear(d_model*2, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, hidden_size),
+                nn.ReLU(),
+                nn.Linear(hidden_size, 1)
+        )
 
+        self.optimizer = optim.Adam(self.parameters(), lr=alpha)
         self.to(self.device)
 
     def forward(self, state, commands, **kwargs):
@@ -55,12 +60,12 @@ class CommandScorer(nn.Module):
         state_output, self.state_hidden = self.state_gru(state_output, self.state_hidden) # torch.Size([1, 1, 512]) torch.Size([1, 1, 512])
         observation_hidden = self.state_hidden.squeeze()
 
-        value = self.critic(state_output).squeeze()
+        value = self.critic(state_output).squeeze().item()
 
         # Transformer Encoder for commands
         cmd_src = self.encoder(commands.permute(1, 0)) * math.sqrt(self.d_model)
         cmd_src = self.pos_encoder(cmd_src)
-        cmd_output = self.transformer_encoder(cmd_src) # torch.Size([5, 1, 512])
+        cmd_output = self.transformer_encoder(cmd_src) # torch.Size([cmd_len, 1, 512])
 
         # Concatenate the observed state and command encodings.
         observation_hidden = torch.stack([observation_hidden] * commands.size(1)) # torch.Size([66, 512])
@@ -72,16 +77,18 @@ class CommandScorer(nn.Module):
             # if only one admissible_command
             scores = scores.unsqueeze(0)
         prob = F.softmax(scores, dim=0)
+        dist = Categorical(prob)
 
-        # sample from the distribution over commands
-        if np.random.rand() > self.epsilon: # greedy
-            index = torch.argmax(prob).squeeze()
-        else:
-            index = prob.multinomial(num_samples=1).squeeze()
-        return scores, prob, value, index
+        return dist, value
 
     def reset_hidden(self):
         self.state_hidden = None
+
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self.checkpoint_file)
+
+    def load_checkpoint(self):
+        self.load_state_dict(torch.load(self.checkpoint_file))
 
 
 class PositionalEncoding(nn.Module):
@@ -104,3 +111,32 @@ class PositionalEncoding(nn.Module):
         """
         x = self.pe[:x.size(0)]
         return self.dropout(x)
+
+
+class CriticNetwork(nn.Module):
+    def __init__(self, device, input_dims, alpha, fc1_dims=256, fc2_dims=256,
+            chkpt_dir='/tmp/ppo'):
+        super(CriticNetwork, self).__init__()
+
+        self.checkpoint_file = os.path.join(chkpt_dir, 'critic_torch_ppo')
+        self.critic = nn.Sequential(
+                nn.Linear(input_dims, fc1_dims),
+                nn.ReLU(),
+                nn.Linear(fc1_dims, fc2_dims),
+                nn.ReLU(),
+                nn.Linear(fc2_dims, 1)
+        )
+
+        self.device = device
+        self.optimizer = optim.Adam(self.parameters(), lr=alpha)
+        self.to(self.device)
+
+    def forward(self, state):
+        value = self.critic(state)
+        return value
+
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), self.checkpoint_file)
+
+    def load_checkpoint(self):
+        self.load_state_dict(torch.load(self.checkpoint_file))

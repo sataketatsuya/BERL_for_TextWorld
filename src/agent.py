@@ -9,7 +9,8 @@ import torch
 import torch.nn as nn
 from torch import optim
 import torch.nn.functional as F
-from command_scorer import CommandScorer
+from ppo_memory import PPOMemory
+from command_scorer import ActorNetwork, CriticNetwork
 from textutils import CompactPreprocessor
 from bertner import Ner
 from commandgenerator import CommandModel
@@ -36,6 +37,10 @@ class NerBertAgent:
         self.batch_size = self.config['training']['batch_size']
         self.max_nb_steps_per_episode = self.config['training']['max_nb_steps_per_episode']
         self.nb_epochs = self.config['training']['nb_epochs']
+        self.update_frequency = self.config['training']['update_frequency']
+        self.gamma = self.config['training']['gamma']
+        self.gae_lambda = self.config['training']['gae_lambda']
+        self.policy_clip = self.config['training']['policy_clip']
 
         self.id2word = ["<PAD>", "<UNK>"]
         self.word2id = {w: i for i, w in enumerate(self.id2word)}
@@ -49,8 +54,12 @@ class NerBertAgent:
         self.langmodel = CommandModel()
         self.cp = CompactPreprocessor()
 
-        self.model = CommandScorer(self.device, self.config)
-        self.optimizer = optim.Adam(self.model.parameters(), self.config['training']['optimizer']['learning_rate'])
+        # Actor-Critic
+        self.alpha = self.config['training']['optimizer']['alpha']
+        self.input_dims = self.config['training']['optimizer']['input_dims']
+        self.critic = CriticNetwork(self.device, self.input_dims, self.alpha)
+        self.actor = ActorNetwork(self.device, self.config, self.critic)
+        self.memory = PPOMemory(self.batch_size)
 
         self.mode = "test"
         self.model_updates = 0
@@ -68,15 +77,26 @@ class NerBertAgent:
         self.prepared = False
 
         self.mode = "train"
-        self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
-        self.transitions = []
-        self.model.reset_hidden()
+        self.actor.reset_hidden()
         self.last_score = 0
-        self.previous_action = None
+        self.state_text = ''
 
     def test(self):
         self.mode = "test"
-        self.model.reset_hidden()
+        self.actor.reset_hidden()
+
+    def remember(self, state, action, admissible_commands, probs, vals, reward, done):
+        self.memory.store_memory(state, action, admissible_commands, probs, vals, reward, done)
+
+    def save_models(self):
+        print('... saving models ...')
+        self.actor.save_checkpoint()
+        self.critic.save_checkpoint()
+
+    def load_models(self):
+        print('... loading models ...')
+        self.actor.load_checkpoint()
+        self.critic.load_checkpoint()
 
     def _get_word_id(self, word):
         if word not in self.word2id:
@@ -93,8 +113,20 @@ class NerBertAgent:
         text = re.sub("[^a-zA-Z0-9\- ]", " ", text)
         word_ids = list(map(self._get_word_id, text.split()))
         return word_ids
-
+    
     def _process(self, texts):
+        texts = re.sub("[^a-zA-Z0-9\- ]", " ", texts)
+        texts = list(map(self._get_word_id, texts.split()))
+        padded = np.ones((len(texts), 1)) * self.word2id["<PAD>"]
+
+        for i, text in enumerate(texts):
+            padded[i, :text] = text
+
+        padded_tensor = torch.from_numpy(padded).type(torch.long).to(self.device)
+        padded_tensor = padded_tensor.permute(1, 0) # Batch x Seq => Seq x Batch
+        return padded_tensor
+
+    def _process_command(self, texts):
         texts = list(map(self._tokenize, texts))
         max_len = max(len(l) for l in texts)
         padded = np.ones((len(texts), max_len)) * self.word2id["<PAD>"]
@@ -153,19 +185,7 @@ class NerBertAgent:
                     necessary_entities.append(entity)
         return necessary_entities
 
-    def _discount_rewards(self, last_values):
-        returns, advantages = [], []
-        R = last_values.data
-        for t in reversed(range(len(self.transitions))):
-            rewards, _, _, values = self.transitions[t]
-            R = rewards + self.config['general']['discount_gamma'] * R
-            adv = R - values
-            returns.append(R)
-            advantages.append(adv)
-
-        return returns[::-1], advantages[::-1]
-
-    def act(self, obs: str, score: int, done: bool, infos: Dict[str, Any]):
+    def store_state_text(self, obs: str, infos: Dict[str, Any]):
         if not self.reading:
             self.reading = 'and start reading' in obs
         self.recipe = self._get_recipe(obs)
@@ -178,8 +198,15 @@ class NerBertAgent:
 
         # Let the state define <number of items in inventory><inventory text><recipe text><look text>
         # Tokenize and pad the state
-        state_text = self.cp.convert(description, self.recipe, inventory, get_all_entities())
-        state_tensor = self._process(state_text) # torch.Size([1, state_text_length])
+        self.state_text = self.cp.convert(description, self.recipe, inventory, get_all_entities())
+
+    def choose_action(self, obs: str, infos: Dict[str, Any]):
+        inventory = infos['inventory']
+        description = self._preprocess_description(infos['description'])
+
+        if self.state_text == '':
+            self.store_state_text(obs, infos)
+        state_tensor = self._process(self.state_text) # torch.Size([1, state_text_length])
 
         # Generate commands from observation with NER Bert
         entity_types = self.generate_entities(description, inventory) # ('cookbook', 'T'), ('south', 'W'), ('west', 'W'), ('red onion', 'F')
@@ -189,82 +216,69 @@ class NerBertAgent:
             entity_types = self.drop_unnecessary_items(entity_types)
 
         commands = self.get_admissible_commands(description, inventory, entity_types, templates if self.custom_template else infos['command_templates'])
-        commands_tensor = self._process(commands) # torch.Size([max_command_size, command_length])
+        commands_tensor = self._process_command(commands) # torch.Size([max_command_size, command_length])
 
         # Get our next action and value prediction.
-        cmd_scores, prob, value, index = self.model(state_tensor, commands_tensor)
+        dist, value = self.actor(state_tensor, commands_tensor)
+
+        # sample from the distribution over commands
+        index = dist.sample()
+        # get probability command
+        probs = dist.log_prob(index).item()
 
         action = commands[index]
 
-        if self.mode == "test":
-            if done:
-                self.model.reset_hidden()
-            return action
+        return action, probs, value, commands, index.item()
 
-        self.no_train_step += 1
+    def learn(self):
+        for _ in range(self.nb_epochs):
+            state_arr, action_arr, admissible_commands_arr,\
+            old_prob_arr, vals_arr,\
+            reward_arr, dones_arr, batches = \
+                    self.memory.generate_batches()
 
-        if self.transitions:
-            reward = score - self.last_score  # Reward is the gain/loss in score.
-            self.last_score = score
+            values = vals_arr
+            advantage = np.zeros(len(reward_arr), dtype=np.float32)
 
-            self.transitions[-1][0] = reward  # Update reward information.
+            for t in range(len(reward_arr) - 1):
+                discount = 1
+                a_t = 0
+                for k in range(t, len(reward_arr) - 1):
+                    a_t += discount * (reward_arr[k] + self.gamma * values[k+1] * (1 - int(dones_arr[k])) - values[k])
+                    discount *= self.gamma * self.gae_lambda
+                advantage[t] = a_t
+            advantage = torch.from_numpy(advantage).to(self.device)
 
-            self.previous_action = action
+            values = torch.from_numpy(values).to(self.device)
+            for batch in batches:
+                state_tensor = self._process(state_arr[batch][0])
+                commands_tensor = self._process_command(admissible_commands_arr[batch][0])
+                old_probs = torch.from_numpy(old_prob_arr[batch]).to(self.device)
+                actions = torch.from_numpy(action_arr[batch]).to(self.device)
 
-        # self.stats["max"]["score"].append(score)
-        if len(self.transitions) >= 10 or done:
+                dist, critic_value = self.actor(state_tensor, commands_tensor)
 
-            # Update model
-            returns, advantages = self._discount_rewards(value)
+                new_probs = dist.log_prob(actions)
+                prob_ratio = new_probs.exp() / old_probs.exp() # importance ratio
+                #prob_ratio = (new_probs - old_probs).exp()
+                weighted_probs = advantage[batch[0]] * prob_ratio
+                weighted_clipped_probs = torch.clamp(prob_ratio, 1 - self.policy_clip, 1 + self.policy_clip) * advantage[batch[0]] # Cliping
+                actor_loss = -torch.min(weighted_probs, weighted_clipped_probs).mean()
 
-            loss = 0
-            for transition, _return, advantage in zip(self.transitions, returns, advantages):
-                reward, index, cmd_scores, values_ = transition
+                returns = advantage[batch[0]] + values[batch[0]]
+                critic_loss = (returns - critic_value)**2
+                critic_loss = critic_loss.mean()
 
-                advantage        = advantage.detach()
-                probs            = F.softmax(cmd_scores, dim=-1)
-                log_probs        = torch.log(probs)
-                log_action_prob  = log_probs[index]
-                policy_loss      = -log_action_prob * advantage
-                value_loss       = (.5 * (values_ - _return) ** 2.)
-                entropy          = (-log_probs * probs).mean()
+                total_loss = actor_loss + 0.5 * critic_loss
+                self.actor.optimizer.zero_grad()
+                self.critic.optimizer.zero_grad()
+                total_loss.backward(retain_graph=True)
+                self.actor.optimizer.step()
+                self.critic.optimizer.step()
 
-                # add up the loss over time
-                loss += policy_loss + 0.5 * value_loss - 0.1 * entropy
+                self.actor.reset_hidden()
 
-                self.stats["mean"]["reward"].append(reward)
-                self.stats["mean"]["policy"].append(policy_loss.item())
-                self.stats["mean"]["value"].append(value_loss.item())
-                self.stats["mean"]["entropy"].append(entropy.item())
-                self.stats["mean"]["confidence"].append(torch.exp(log_action_prob).item())
-
-            self.model_updates += 1
-            self.transitions = []
-
-            if loss != 0:
-                if self.model_updates % 100 == 0:
-                    msg = "{:6d}. updated {}. ".format(self.no_train_step, self.model_updates)
-                    msg += "  ".join("{}: {: 3.3f}".format(k, np.mean(v)) for k, v in self.stats["mean"].items())
-                    msg += "  " + "  ".join("{}: {:2d}".format(k, np.max(v)) for k, v in self.stats["max"].items())
-                    msg += "  vocab: {:3d}".format(len(self.id2word))
-                    msg += "  loss: {}".format(loss)
-                    print(msg)
-                self.stats = {"max": defaultdict(list), "mean": defaultdict(list)}
-
-                self.optimizer.zero_grad()
-                loss.backward(retain_graph=True)
-                nn.utils.clip_grad_norm_(self.model.parameters(), 40)
-                self.optimizer.step()
-
-                self.model.reset_hidden() # Do not edit this code because of pytorch error
-        else:
-            # Keep information about transitions for Truncated Backpropagation Through Time.
-            self.transitions.append([None, index, cmd_scores, value.item()])  # Reward will be set on the next call
-
-        if done:
-            self.last_score = 0  # Will be starting a new episode. Reset the last score.
-
-        return action
+        self.memory.clear_memory()
 
     def _get_recipe(self, observation, explicit_recipe=None):
         """

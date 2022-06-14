@@ -88,9 +88,13 @@ class Environment:
 
 class Trainer:
     def __init__(self, args):
-        self.agent = NerBertAgent(args)
         self.env = Environment(args.games)
         self.checkpoint_directory = args.output
+        try:
+            self.agent = self.load_agent()
+            print('エージェントロード成功')
+        except:
+            self.agent = NerBertAgent(args)
 
     def load_agent(self):
         return joblib.load(os.path.join(self.checkpoint_directory, 'ner_bert_agent', 'ner_bert_agent.pkl'))
@@ -98,29 +102,43 @@ class Trainer:
     def train(self):
         self.start_time = time()
 
-        for epoch_no in range(1, self.agent.nb_epochs + 1):
-            for game_no in tqdm(range(1000)):
-                obs, infos = self.env.reset()
-                self.agent.train()
+        score_history = []
+        learn_iters = 0
+        avg_score = 0
+        time_steps = 0
+        for game_no in tqdm(range(1000)):
+            obs, infos = self.env.reset()
+            self.agent.train()
+            self.agent.store_state_text(obs, infos)
 
-                score = 0
-                done = False
-                steps = 0
-                while not done:
-                    # Increase step counts.
-                    steps += 1
-                    command = self.agent.act(obs, score, done, infos)
-                    obs, score, done, infos = self.env.step(command)
+            score = 0
+            done = False
+            steps = 0
+            while not done:
+                action, prob, val, admissible_commands, index = self.agent.choose_action(obs, infos)
+                obs, score, done, infos = self.env.step(action)
+                # Increase step counts.
+                steps += 1
+                time_steps += 1
+                reward = score - self.agent.last_score
+                self.agent.last_score = score
+                score += reward
+                self.agent.remember(self.agent.state_text, index, admissible_commands, prob, val, reward, done)
+                if time_steps % self.agent.update_frequency == 0 or done:
+                    self.agent.learn()
+                    learn_iters += 1
+                self.agent.store_state_text(obs, infos)
+            score_history.append(score)
+            avg_score = np.mean(score_history[-100:])
 
-                print('Game Result Won:{} Lost:{}'.format(infos['won'], infos['lost']))
-                print('Max score :{}, Agent score : {}'.format(infos['max_score'], score))
-                if infos['won']:
-                    print('Walkthrough steps :{}, Agent steps :{}'.format(len(infos['extra.walkthrough']), steps))
-                # Let the agent know the game is done.
-                self.agent.act(obs, score, done, infos)
-                if game_no % 100 == 0:
-                    joblib.dump(self.agent, os.path.join(self.checkpoint_directory, 'ner_bert_agent', 'ner_bert_agent.pkl'))
-                    print('saved agent')
+            # if game_no % 100 == 0:
+            #     joblib.dump(self.agent, os.path.join(self.checkpoint_directory, 'ner_bert_agent', 'ner_bert_agent.pkl'))
+            #     print('saved agent')
+
+            print('episode', game_no, 'score %.1f' % score, 'avg score %.1f' % avg_score,
+                'max possible score %.1f' % infos['max_score'], 'learning_steps', learn_iters, 'time_steps', time_steps,)
+            # Let the agent know the game is done.
+            self.agent.choose_action(obs, infos)
 
 
 if __name__ == '__main__':
@@ -133,6 +151,8 @@ if __name__ == '__main__':
                         help='Directory of the games used for training.')
     parser.add_argument('--gpu', action='store', type=str, default=None,
                         help='Set cuda index for training.')
+    parser.add_argument('--batch_size', action='store', type=str, default=5,
+                        help='Batch Size for PPO.')
     args = parser.parse_args()
 
     Trainer(args).train()
